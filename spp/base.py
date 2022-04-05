@@ -1,4 +1,5 @@
 import pydot
+import numpy as np
 
 from pydrake.geometry.optimization import (
     GraphOfConvexSets,
@@ -103,18 +104,24 @@ class BaseSPP:
             raise NotImplementedError(
                 "Replanning on a graph that has undergone preprocessing is "
                 "not supported yet. Please construct a new planner.")
-        statistics = {}
+
+        results_dict = {}
         if preprocessing:
-            statistics["preprocessing"] = removeRedundancies(self.spp, start, goal, verbose=verbose)
+            results_dict["preprocessing_stats"] = removeRedundancies(self.spp, start, goal, verbose=verbose)
             self.graph_complete = False
 
         result = self.spp.SolveShortestPath(start, goal, rounding, self.solver, self.options)
 
-        statistics["solver_time"] = result.get_solver_details().optimizer_time
+        if rounding:
+            results_dict["relaxation_result"] = result
+            results_dict["relaxation_solver_time"] = result.get_solver_details().optimizer_time
+        else:
+            results_dict["mip_result"] = result
+            results_dict["mip_solver_time"] = result.get_solver_details().optimizer_time
 
         if not result.is_success():
             print("First solve failed")
-            return None, result, None, statistics
+            return None, None, results_dict
 
         if verbose:
             print("Solution\t",
@@ -132,33 +139,46 @@ class BaseSPP:
             else:
                 found_path = True
             active_edges.append(rounded_edges)
+        results_dict["rounded_paths"] = active_edges
         if not found_path:
             print("All rounding strategies failed to find a path.")
-            return None, result, None, statistics
+            return None, None, results_dict
 
         # Solve with hard edge choices
         if rounding:
-            hard_result = []
-            found_solution = False
+            rounded_results = []
+            best_cost = np.inf
+            best_path = None
+            best_result = None
+            max_rounded_solver_time = 0.0
             for path_edges in active_edges:
                 if path_edges is None:
-                    hard_result.append(None)
+                    rounded_results.append(None)
                     continue
                 for edge in self.spp.Edges():
                     if edge in path_edges:
                         edge.AddPhiConstraint(True)
                     else:
                         edge.AddPhiConstraint(False)
-                hard_result.append(self.spp.SolveShortestPath(
+                rounded_results.append(self.spp.SolveShortestPath(
                     start, goal, rounding, self.solver, self.options))
-                if hard_result[-1].is_success():
-                    found_solution = True
+                max_rounded_solver_time = np.maximum(
+                    rounded_results[-1].get_solver_details().optimizer_time,
+                    max_rounded_solver_time)
+                if (rounded_results[-1].is_success()
+                    and rounded_results[-1].get_optimal_cost() < best_cost):
+                    best_cost = rounded_results[-1].get_optimal_cost()
+                    best_path = path_edges
+                    best_result = rounded_results[-1]
 
-            statistics["max_hard_solver_time"] =  min(list(map(lambda r: r.get_solver_details().optimizer_time, hard_result))) if len(hard_result) != 0 else 0.0
+            results_dict["best_path"] = best_path
+            results_dict["best_result"] = best_result
+            results_dict["rounded_results"] = rounded_results
+            results_dict["max_rounded_solver_time"] =  max_rounded_solver_time
 
             if verbose:
                 print("Rounded Solutions:")
-                for r in hard_result:
+                for r in rounded_results:
                     if r is None:
                         print("\t\tNo path to solve")
                         continue
@@ -167,11 +187,17 @@ class BaseSPP:
                         "Cost:", r.get_optimal_cost(),
                         "Solver time:", r.get_solver_details().optimizer_time)
 
-            if not found_solution:
+            if best_path is None:
                 print("Second solve failed on all paths.")
-                return None, result, hard_result, statistics
+                return best_path, best_result, results_dict
         else:
-            hard_result = [result]
-            active_edges = [active_edges[0]]
-            statistics["max_hard_solver_time"] =  0.0
-        return active_edges, result, hard_result, statistics
+            best_path = [active_edges[0]]
+            results_dict["best_path"] = best_path
+            results_dict["best_result"] = result
+            results_dict["mip_path"] = best_path
+
+        if verbose:
+            for edge in best_path:
+                print("Added", edge.name(), "to path.")
+
+        return best_path, best_result, results_dict
