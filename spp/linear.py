@@ -116,8 +116,11 @@ class LinearSPP(BaseSPP):
                 prog.AddLorentzConeConstraint(s, d.dot(d))
             solver = MosekSolver()
             result = solver.Solve(prog)
-            assert np.isclose(result.get_optimal_cost(), hard_result[i].get_optimal_cost(), rtol=1e-3, atol=1e-3)
+            cost = result.get_optimal_cost()
+            assert np.isclose(cost, hard_result[i].get_optimal_cost(), rtol=1e-3, atol=1e-3)
             rounding_time += result.get_solver_details().optimizer_time
+            if (cost - statistics["result_cost"]) / cost < .01:
+                break
         statistics['rounding_time'] = rounding_time
 
         ########################################################################
