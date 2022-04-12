@@ -93,6 +93,35 @@ class LinearSPP(BaseSPP):
             self.ResetGraph([start, goal])
             return None, result, None, hard_result, statistics
 
+        ########################################################################
+        # The following overwrites the rounding times.
+
+        from pydrake.all import MathematicalProgram, MosekSolver
+
+        A = np.hstack((np.eye(self.dimension), -np.eye(self.dimension)))
+        b = np.zeros(self.dimension)
+        rounding_time = 0
+        for i, path_edges in enumerate(active_edges):
+            prog = MathematicalProgram()
+            x = prog.NewContinuousVariables(len(path_edges), self.dimension)
+            X = [e.u().set() for e in path_edges] + [path_edges[-1].v().set()]
+            for Xv, xv in zip(X[:-1], x):
+                Xv.AddPointInSetConstraints(prog, xv)
+            for Xv, xv in zip(X[1:], x):
+                Xv.AddPointInSetConstraints(prog, xv)
+            for xu, xv in zip(x[:-1], x[1:]):
+                s = prog.NewContinuousVariables(1)[0]
+                prog.AddLinearCost(s)
+                d = xv - xu
+                prog.AddLorentzConeConstraint(s, d.dot(d))
+            solver = MosekSolver()
+            result = solver.Solve(prog)
+            assert np.isclose(result.get_optimal_cost(), hard_result[i].get_optimal_cost(), rtol=1e-3, atol=1e-3)
+            rounding_time += result.get_solver_details().optimizer_time
+        statistics['rounding_time'] = rounding_time
+
+        ########################################################################
+
         best_cost = np.inf
         best_path = None
         best_result = None
